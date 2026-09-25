@@ -7,7 +7,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from server import CalculatorServer  # noqa: E402
+from server import INDEX_HTML, CalculatorServer  # noqa: E402
 
 
 class Conn:
@@ -149,7 +149,7 @@ class TestRouting(ServerTest):
         c = self.connect()
         self.assertEqual(c.get("/pow?a=2&b=8")[0], 404)
         self.assertEqual(c.get("/add/?a=1&b=2")[0], 404)
-        self.assertEqual(c.get("/")[0], 404)
+        self.assertEqual(c.get("/nope")[0], 404)   # "/" itself is the UI page now: see TestFrontend
         for method in ("POST", "PUT", "DELETE", "OPTIONS"):
             c.send(f"{method} /add HTTP/1.1\r\nHost: x\r\n\r\n")
             status, headers, _ = c.read()
@@ -325,6 +325,67 @@ class TestConnectionManagement(ServerTest):
             self.skipTest("no IPv6 loopback")
         c = self.connect(family=socket.AF_INET6, host="::1")
         self.assertEqual(c.get("/add?a=2&b=3")[2], "5")
+
+
+class TestFrontend(ServerTest):
+    """GET / serves web/index.html. The graded routes must not notice."""
+
+    def test_get_root_serves_the_page(self):
+        c = self.connect()
+        status, headers, body = c.get("/")
+        self.assertEqual((status, headers["content-type"]), (200, "text/html; charset=utf-8"))
+        with open(INDEX_HTML, "rb") as f:
+            self.assertEqual(body.encode("utf-8"), f.read())
+        self.assertEqual(headers["connection"], "keep-alive")
+        self.assertEqual(c.get("/add?a=2&b=3")[::2], (200, "5"))   # the page was framed exactly
+
+    def test_head_root_is_headers_only(self):
+        c = self.connect()
+        length = c.get("/")[1]["content-length"]
+        c.send("HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+        status, headers, _ = c.read(head_only=True)
+        self.assertEqual((status, headers["content-type"], headers["content-length"]),
+                         (200, "text/html; charset=utf-8", length))
+        # Had the page followed the HEAD response, this read would start with "<!doctype html>".
+        self.assertEqual(c.get("/mul?a=2&b=3")[::2], (200, "6"))
+
+    def test_post_root_is_405(self):
+        c = self.connect()
+        c.send("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 7\r\n\r\na=2&b=3")
+        status, headers, _ = c.read()
+        self.assertEqual((status, headers["allow"]), (405, "GET, HEAD"))
+        self.assertTrue(c.still_open())
+
+    def test_graded_routes_unchanged(self):
+        c = self.connect()
+        status, headers, body = c.get("/add?a=2&b=3")
+        self.assertEqual((status, headers["content-type"], body), (200, "text/plain; charset=utf-8", "5"))
+        self.assertEqual(c.get("/pow?a=2&b=8")[0], 404)
+        self.assertEqual(c.get("/index.html")[0], 404)       # only "/" itself: no static file serving
+        self.assertEqual(c.get("/web/index.html")[0], 404)
+
+    def test_conn_id_same_on_one_socket_different_across_sockets(self):
+        a, b = self.connect(), self.connect()
+        ids_a = [a.get(t)[1]["x-conn-id"] for t in ("/add?a=1&b=1", "/div?a=1&b=0", "/pow?a=2&b=8", "/")]
+        id_b = b.get("/add?a=1&b=1")[1]["x-conn-id"]
+        self.assertEqual(len(set(ids_a)), 1, ids_a)
+        self.assertNotEqual(id_b, ids_a[0])
+
+    def test_request_counter_increments(self):
+        c = self.connect()
+        counts = [c.get(t)[1]["x-conn-request"] for t in ("/add?a=1&b=1", "/div?a=1&b=0", "/pow?a=2&b=8", "/")]
+        c.send("POST /add HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc")
+        counts.append(c.read()[1]["x-conn-request"])
+        self.assertEqual(counts, ["1", "2", "3", "4", "5"])
+        self.assertEqual(self.connect().get("/add?a=1&b=1")[1]["x-conn-request"], "1")   # per connection
+
+    def test_conn_headers_on_a_closing_error_too(self):
+        c = self.connect()
+        conn_id = c.get("/add?a=1&b=1")[1]["x-conn-id"]
+        c.send("POST /add HTTP/1.1\r\nHost: x\r\nContent-Length: abc\r\n\r\n")
+        status, headers, _ = c.read()
+        self.assertEqual((status, headers["connection"], headers["x-conn-id"], headers["x-conn-request"]),
+                         (400, "close", conn_id, "2"))
 
 
 class TestTimeouts(ServerTest):

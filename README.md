@@ -4,7 +4,7 @@ Python 3.8+, standard library only, raw sockets throughout. The analysis and pla
 
 | | What | Where | Run |
 |---|---|---|---|
-| **Assignment** (before session 7) | *Build a calculator that stays on the line*: HTTP/1.1 keep-alive on a raw socket | [calculator/](calculator/) | `python server.py`, then `python marker.py` |
+| **Assignment** (before session 7) | *Build a calculator that stays on the line*: HTTP/1.1 keep-alive on a raw socket, plus a browser UI at `/` that shows one connection carrying every request | [calculator/](calculator/) | `python server.py`, open <http://localhost:8080>, then `python marker.py` |
 | **Course project** | *HTTP, in binary*: design the framing, write the spec, build `bserve` + `bcurl` | [binary-http/](binary-http/) | `./bserve ./www 9000`, then `./bcurl -v localhost:9000/index.html` |
 
 ## Checklist against the brief
@@ -14,6 +14,7 @@ Python 3.8+, standard library only, raw sockets throughout. The analysis and pla
 - [x] one socket, every request: `marker.py` shows *socket still open: True, 1 TCP handshake, 6 responses*
 - [x] exactly Content-Length bytes consumed; byte n+1 left for the next request (10 framing tests, mutation-checked)
 - [x] stretch: `Connection: close`, a defended idle timeout (60 s, plus a separate 10 s request clock), chunked request bodies, pipelining
+- [x] extra: a one-file UI served by the same raw-socket server; `X-Conn-Id` / `X-Conn-Request` headers show which connection answered, and it runs the marking sequence in the browser
 
 **Binary HTTP** ([README](binary-http/README.md))
 - [x] fixed 8-octet frame header, 16/8/8/32, defended against HTTP/2's 24/8/8/31 ([DESIGN.md](binary-http/DESIGN.md))
@@ -30,6 +31,6 @@ Python 3.8+, standard library only, raw sockets throughout. The analysis and pla
 ## Tests
 
 ```sh
-(cd calculator  && python -m unittest discover -s tests -v)   # 27 tests
+(cd calculator  && python -m unittest discover -s tests -v)   # 34 tests
 (cd binary-http && python -m unittest discover -s tests -v)   # 64 tests (22 need node for interop)
 ```

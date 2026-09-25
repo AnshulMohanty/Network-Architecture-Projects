@@ -5,6 +5,7 @@
     python server.py --port 8081 --idle-timeout 30
 
     GET /add|sub|mul|div?a=<n>&b=<n>   ->   200, the result as text/plain
+    GET /                              ->   200, web/index.html (a page that shows the connection being reused)
 
 No http.server, no urllib: every byte goes through socket.recv() and socket.sendall().
 
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import os
 import re
 import socket
 import sys
@@ -34,6 +36,10 @@ MAX_OPERAND = 100               # characters per number: arithmetic, not a CPU-b
 DEFAULT_IDLE_TIMEOUT = 60.0     # quiet time allowed *between* requests on a kept-alive connection
 DEFAULT_REQUEST_TIMEOUT = 10.0  # once a request has started, all of it must arrive within this
 DEFAULT_MAX_CONNECTIONS = 64
+
+TEXT_PLAIN = "text/plain; charset=utf-8"
+TEXT_HTML = "text/html; charset=utf-8"
+INDEX_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "index.html")
 
 REASONS = {
     100: "Continue", 200: "OK", 400: "Bad Request", 404: "Not Found",
@@ -288,7 +294,7 @@ OPERATIONS = {
 
 
 def answer(request):
-    """Return the response body for a well-framed request, or raise a keep-alive HTTPError."""
+    """Return (body, content type) for a well-framed request, or raise a keep-alive HTTPError."""
     if request.version >= (1, 1):
         hosts = request.get_all("host")
         if not hosts:
@@ -300,15 +306,28 @@ def answer(request):
 
     path, query = split_target(request.target)
     operation = OPERATIONS.get(path)
-    if operation is None:
+    if operation is None and path != "/":
         raise HTTPError(404, f"no such operation {path}; try /add /sub /mul /div")
     if request.method not in ALLOWED_METHODS:
         raise HTTPError(405, f"{request.method} is not allowed on {path}; use GET",
                         headers=[("Allow", ", ".join(ALLOWED_METHODS))])
+    if operation is None:
+        return index_page(), TEXT_HTML
 
     params = parse_query(query)
     a, b = operand(params, "a"), operand(params, "b")
-    return format_number(operation(a, b))
+    return format_number(operation(a, b)), TEXT_PLAIN
+
+
+def index_page():
+    """The page served at /. Its path is fixed, so no part of a request-target reaches the file
+    system: there is no static file serving here, and nothing to traverse."""
+    try:
+        with open(INDEX_HTML, "rb") as f:
+            return f.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # Must not escape as an OSError: _serve_connection treats those as a dead socket.
+        raise HTTPError(500, f"cannot read web/index.html ({exc.__class__.__name__})")
 
 
 def split_target(target):
@@ -381,14 +400,15 @@ def format_number(value):
 # Writing responses
 # --------------------------------------------------------------------------------------------
 
-def build_response(status, body, keep_alive, idle_timeout, extra_headers=(), head_only=False):
+def build_response(status, body, keep_alive, idle_timeout, extra_headers=(), head_only=False,
+                   content_type=TEXT_PLAIN):
     """The whole response as one byte string, so it goes out in one sendall()."""
     body = body.encode("utf-8")
     lines = [
         f"HTTP/1.1 {status} {REASONS[status]}",
         f"Date: {formatdate(usegmt=True)}",
         "Server: calc/1.0",
-        "Content-Type: text/plain; charset=utf-8",
+        f"Content-Type: {content_type}",
         f"Content-Length: {len(body)}",
     ]
     lines += [f"{name}: {value}" for name, value in extra_headers]
@@ -508,26 +528,33 @@ class CalculatorServer:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             with self._lock:
                 self.connections_accepted += 1
+            conn_id = next(self._ids)
             if not self._slots.acquire(blocking=False):
-                threading.Thread(target=self._refuse, args=(sock,), daemon=True).start()
+                threading.Thread(target=self._refuse, args=(sock, conn_id), daemon=True).start()
                 continue
-            threading.Thread(target=self._serve_connection, args=(sock, peer), daemon=True).start()
+            threading.Thread(target=self._serve_connection, args=(sock, peer, conn_id), daemon=True).start()
 
-    def _refuse(self, sock):
+    def _refuse(self, sock, conn_id):
         try:
             sock.settimeout(1.0)
-            sock.sendall(build_response(503, "too many connections, try again later", False, None))
+            sock.sendall(build_response(503, "too many connections, try again later", False, None,
+                                        [("X-Conn-Id", str(conn_id)), ("X-Conn-Request", "1")]))
         except OSError:
             pass
         close_gracefully(sock)
 
-    def _serve_connection(self, sock, peer):
-        conn_id = next(self._ids)
+    def _serve_connection(self, sock, peer, conn_id):
         tag = f"[conn {conn_id} {peer[0]}:{peer[1]}]"
         self.log(f"{tag} open")
         reader = Reader(sock)
         served = 0
         why = "?"
+
+        def conn_headers():
+            # A browser cannot see sockets. These tell it which connection answered, and how many
+            # responses that connection has carried, this one included.
+            return [("X-Conn-Id", str(conn_id)), ("X-Conn-Request", str(served + 1))]
+
         try:
             while True:
                 # Idle phase: between requests the client may take up to idle_timeout seconds.
@@ -551,16 +578,18 @@ class CalculatorServer:
                 try:
                     request = read_request(reader)
                     status, extra = 200, []
-                    body = answer(request)
+                    body, content_type = answer(request)
                 except HTTPError as err:
                     status, body, extra = err.status, f"{err.status} {REASONS[err.status]}: {err.message}", err.headers
+                    content_type = TEXT_PLAIN
                     if err.close:
-                        self._send(sock, build_response(status, body, False, None, extra))
+                        self._send(sock, build_response(status, body, False, None, extra + conn_headers()))
                         self.log(f"{tag} #{served + 1} {self._describe(request)} -> {status} ({err.message}), closing")
                         why = "framing error"
                         return
                 except socket.timeout:
-                    self._send(sock, build_response(408, "408 Request Timeout: request incomplete", False, None))
+                    self._send(sock, build_response(408, "408 Request Timeout: request incomplete", False, None,
+                                                    conn_headers()))
                     why = f"request not complete within {self.request_timeout:g}s (sent 408)"
                     return
                 except PeerClosed:
@@ -569,17 +598,18 @@ class CalculatorServer:
                 except OSError:
                     raise
                 except Exception as exc:   # a bug in here must not take the connection down silently
-                    self._send(sock, build_response(500, "500 Internal Server Error", False, None))
+                    self._send(sock, build_response(500, "500 Internal Server Error", False, None, conn_headers()))
                     why = f"internal error: {exc!r}"
                     return
                 reader.deadline = None
 
                 keep = request.keep_alive
-                self._send(sock, build_response(status, body, keep, self.idle_timeout, extra,
-                                                head_only=request.method == "HEAD"))
+                self._send(sock, build_response(status, body, keep, self.idle_timeout, extra + conn_headers(),
+                                                head_only=request.method == "HEAD", content_type=content_type))
                 served += 1
+                shown = repr(body) if content_type == TEXT_PLAIN else f"<{content_type.split(';')[0]}, {len(body)} chars>"
                 self.log(f"{tag} #{served} {request.method} {request.target[:80]} "
-                         f"HTTP/{request.version[0]}.{request.version[1]} -> {status} {body!r}")
+                         f"HTTP/{request.version[0]}.{request.version[1]} -> {status} {shown}")
                 if not keep:
                     why = "Connection: close" if request.version >= (1, 1) else "HTTP/1.0 without keep-alive"
                     return

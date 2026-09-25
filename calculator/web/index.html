@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calculator on the line</title>
+<meta name="description" content="HTTP/1.1 keep-alive calculator: watch one TCP connection carry many requests.">
+<!-- Inline favicon, so the browser never asks this server for /favicon.ico. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M4 16h24' stroke='%232dd4bf' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='16' r='3.5' fill='%232dd4bf'/%3E%3Ccircle cx='22' cy='16' r='3.5' fill='%23f5b041'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0d10;
+    --panel: #13171c;
+    --inset: #0e1115;
+    --line: #262d36;
+    --text: #e6edf3;
+    --muted: #919ba7;
+    --ok: #2dd4bf;
+    --warn: #f5b041;
+    --err: #ff5d8f;
+    --info: #8ab4ff;
+    --ok-bg: rgba(45, 212, 191, .12);
+    --warn-bg: rgba(245, 176, 65, .13);
+    --err-bg: rgba(255, 93, 143, .13);
+    --focus: #8ab4ff;
+    --g0: #8ab4ff;
+    --g1: #c39bf5;
+    --g2: #a3d977;
+    --g3: #6fd3f5;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --inset: #f0f2f5;
+      --line: #d5dbe2;
+      --text: #1b1f24;
+      --muted: #57606a;
+      --ok: #0b7066;
+      --warn: #955f00;
+      --err: #c0164f;
+      --info: #2b59c3;
+      --ok-bg: rgba(11, 112, 102, .09);
+      --warn-bg: rgba(149, 95, 0, .09);
+      --err-bg: rgba(192, 22, 79, .08);
+      --focus: #2b59c3;
+      --g0: #2b59c3;
+      --g1: #7b45c9;
+      --g2: #4a7a12;
+      --g3: #0b6f99;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 var(--sans);
+  }
+  code, pre, kbd, samp, .mono { font-family: var(--mono); font-size: .92em; }
+  a { color: var(--info); }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
+  header.top { margin-bottom: 20px; }
+  h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 6px; letter-spacing: -.01em; }
+  .lede { margin: 0; color: var(--muted); max-width: 70ch; }
+  .lede code { color: var(--text); }
+  .extra-tag {
+    display: inline-block; font: 600 .7rem/1.6 var(--sans); letter-spacing: .04em; text-transform: uppercase;
+    color: var(--info); border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; vertical-align: 1px;
+  }
+
+  /* Live connection strip */
+  .strip {
+    display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+    margin-top: 16px; padding: 12px 14px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  }
+  .strip .item { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .strip .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; }
+  .strip .value { font-family: var(--mono); font-weight: 600; }
+  .idle { flex: 1 1 260px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .idle-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .bar { height: 6px; background: var(--inset); border-radius: 3px; overflow: hidden; border: 1px solid var(--line); }
+  .bar > span { display: block; height: 100%; width: 0; background: var(--ok); transition: width .25s linear; }
+  .bar.low > span { background: var(--warn); }
+  .bar.gone > span { background: var(--err); }
+  .idle .note { color: var(--muted); font-size: .8rem; }
+
+  /* Panels */
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  .wide { grid-column: 1 / -1; }
+  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px; min-width: 0;
+  }
+  .panel h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  .panel > .hint { margin: 0 0 14px; color: var(--muted); font-size: .9rem; }
+  .panel h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 16px 0 6px; }
+
+  /* Calculator */
+  .operands { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 4px; }
+  input[type="text"], select {
+    width: 100%; font: 1.05rem var(--mono); color: var(--text);
+    background: var(--inset); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  }
+  input[type="text"]:focus-visible, select:focus-visible { border-color: var(--focus); outline-offset: 1px; }
+  .ops { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+  button {
+    font: 600 .95rem var(--sans); color: var(--text); cursor: pointer;
+    background: var(--inset); border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px;
+  }
+  button:hover { border-color: var(--muted); }
+  button:disabled { opacity: .55; cursor: progress; }
+  .ops button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 8px 4px; }
+  .ops .sym { font: 600 1.3rem/1.1 var(--mono); }
+  .ops .name { font: .78rem var(--mono); color: var(--muted); }
+  .ops button.last { border-color: var(--ok); }
+  .primary { background: var(--ok); color: #03201c; border-color: var(--ok); }
+  .primary:hover { filter: brightness(1.08); border-color: var(--ok); }
+  @media (prefers-color-scheme: light) { .primary { color: #fff; } }
+
+  .result {
+    margin-top: 16px; padding: 14px 16px; border-radius: 10px; min-height: 104px;
+    background: var(--inset); border: 1px solid var(--line);
+    display: flex; flex-direction: column; justify-content: center; gap: 2px; overflow-wrap: anywhere;
+  }
+  .result .expr { font: .9rem var(--mono); color: var(--muted); }
+  .result .big { font: 700 clamp(2rem, 7vw, 3.2rem)/1.1 var(--mono); }
+  .result .reason { font-size: .95rem; }
+  .result.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+  .result.ok .big { color: var(--ok); }
+  .result.warn { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+  .result.warn .big { color: var(--warn); }
+  .result.err { background: var(--err-bg); border-color: color-mix(in srgb, var(--err) 55%, var(--line)); }
+  .result.err .big { color: var(--err); }
+
+  .custom { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chips button { font: .8rem var(--mono); padding: 4px 8px; border-radius: 999px; }
+
+  /* Wire panel */
+  .wire { font-family: var(--mono); font-size: .88rem; background: var(--inset); border: 1px solid var(--line);
+          border-radius: 10px; padding: 12px 14px; overflow-wrap: anywhere; }
+  .wire .line { display: flex; gap: 10px; }
+  .wire .dir { color: var(--muted); flex: none; width: 1ch; }
+  .wire .reqbody { color: var(--muted); margin: 2px 0 0 calc(1ch + 10px); }
+  .wire .status { font-weight: 700; margin-top: 8px; }
+  .wire dl { margin: 6px 0 0 calc(1ch + 10px); display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 12px; }
+  .wire dt { color: var(--muted); }
+  .wire dd { margin: 0; }
+  .wire .conn-h { color: var(--info); }
+  .wire pre { margin: 0; white-space: pre-wrap; font-size: .92em; max-height: 9.5em; overflow: auto; }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-top: 12px; }
+  .fact { background: var(--inset); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .fact .k { display: block; font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .fact .v { font: 600 1rem var(--mono); }
+
+  /* Status pills and conn pills */
+  .st { font: 700 .85rem var(--mono); padding: 1px 7px; border-radius: 5px; white-space: nowrap; }
+  .st.ok { color: var(--ok); background: var(--ok-bg); }
+  .st.warn { color: var(--warn); background: var(--warn-bg); }
+  .st.err { color: var(--err); background: var(--err-bg); }
+  .st.info { color: var(--info); }
+  .c-ok { color: var(--ok); } .c-warn { color: var(--warn); } .c-err { color: var(--err); } .c-muted { color: var(--muted); }
+  .conn { font: 700 .85rem var(--mono); padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor;
+          white-space: nowrap; color: var(--g, var(--muted)); }
+  .g0 { --g: var(--g0); } .g1 { --g: var(--g1); } .g2 { --g: var(--g2); } .g3 { --g: var(--g3); }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  .log-wrap { max-height: 560px; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  /* On a phone the tables scroll sideways inside their own box; the page itself never does. */
+  @media (max-width: 700px) { table { min-width: 620px; } }
+  caption { text-align: left; }
+  th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 600;
+             font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; z-index: 1; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.mono, td .mono { font-family: var(--mono); font-size: .86rem; overflow-wrap: anywhere; }
+  td.num { font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+  #log tbody tr.row td:first-child { box-shadow: inset 3px 0 0 var(--g, var(--line)); }
+  #log tr.sep td { font-size: .82rem; color: var(--muted); background: var(--inset); padding: 6px 10px;
+                   box-shadow: inset 3px 0 0 var(--g, var(--line)); }
+  #log tr.sep.new td { color: var(--text); font-weight: 600;
+                       background: color-mix(in srgb, var(--g) 16%, var(--inset)); }
+  #log tr.sep.new .flag { color: var(--g); }
+  @media (prefers-reduced-motion: no-preference) {
+    #log tr.sep.new td { animation: flash 1.6s ease-out; }
+    @keyframes flash { from { background: color-mix(in srgb, var(--g) 55%, var(--inset)); } }
+  }
+  .empty td { color: var(--muted); text-align: center; padding: 18px; }
+  .pass { color: var(--ok); font-weight: 700; }
+  .fail { color: var(--err); font-weight: 700; }
+  .conn-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; min-height: 1.6em; align-items: center; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+  .summary { font-weight: 600; }
+  .callout {
+    margin: 12px 0 0; padding: 10px 12px; border-left: 3px solid var(--info);
+    background: var(--inset); border-radius: 0 8px 8px 0; font-size: .9rem; color: var(--muted);
+  }
+  .callout strong { color: var(--text); }
+
+  /* Can't-test list */
+  .untestable { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+  .untestable li { background: var(--inset); border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+  .untestable h3 { margin: 0 0 4px; color: var(--text); text-transform: none; letter-spacing: 0; font-size: .95rem; }
+  .untestable p { margin: 0 0 8px; color: var(--muted); font-size: .88rem; }
+  .untestable pre { margin: 4px 0 0; padding: 7px 9px; background: var(--panel); border: 1px solid var(--line);
+                    border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
+  footer { margin-top: 24px; color: var(--muted); font-size: .85rem; }
+
+  @media (max-width: 520px) {
+    .custom { grid-template-columns: 6.5em minmax(0, 1fr); }
+    .custom .send { grid-column: 1 / -1; }
+    th, td { padding: 6px 7px; }
+    .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>A calculator that stays on the line</h1>
+    <p class="lede">The arithmetic is trivial. The point is that <strong>one TCP connection carries many requests</strong>.
+      Every response here carries <code>X-Conn-Id</code> (which connection the server answered on) and
+      <code>X-Conn-Request</code> (how many requests that connection has carried).
+      If the id stays the same while the count goes up, the connection was reused.
+      <span class="extra-tag" title="Not required by the assignment">extra beyond the brief</span></p>
+
+    <div class="strip" aria-label="Connection status">
+      <div class="item"><span class="label">Last conn</span><span class="value" id="s-conn">none yet</span></div>
+      <div class="item"><span class="label">Requests on it</span><span class="value" id="s-count">0</span></div>
+      <div class="item"><span class="label">Conn ids seen</span><span class="value" id="s-distinct">0</span></div>
+      <div class="idle">
+        <div class="idle-row"><span class="label">Idle timeout</span><span class="value" id="s-idle">waiting for a response</span></div>
+        <div class="bar" id="s-bar" aria-hidden="true"><span></span></div>
+        <span class="note" id="s-idle-note">Estimate: counted in this tab from the last response, using the server's <code>Keep-Alive: timeout</code>.</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="panel" aria-labelledby="calc-h">
+      <h2 id="calc-h">Calculator</h2>
+      <p class="hint">Each button sends one <code>fetch("/op?a=..&amp;b=..")</code>. Try <code>b = 0</code> with ÷, or <code>a = x</code>.</p>
+      <div class="operands">
+        <div><label for="a">a</label><input type="text" id="a" value="2" inputmode="decimal" autocomplete="off" spellcheck="false"></div>
+        <div><label for="b">b</label><input type="text" id="b" value="3" inputmode="decimal" autocomplete="off" spellcheck="false"></div>
+      </div>
+      <div class="ops" role="group" aria-label="Operation">
+        <button type="button" data-op="add"><span class="sym" aria-hidden="true">+</span><span class="name">/add</span></button>
+        <button type="button" data-op="sub"><span class="sym" aria-hidden="true">−</span><span class="name">/sub</span></button>
+        <button type="button" data-op="mul"><span class="sym" aria-hidden="true">×</span><span class="name">/mul</span></button>
+        <button type="button" data-op="div"><span class="sym" aria-hidden="true">÷</span><span class="name">/div</span></button>
+      </div>
+      <div class="result" id="result" role="status" aria-live="polite" aria-atomic="true">
+        <span class="expr">Press an operation, or Enter in a field to repeat the last one.</span>
+      </div>
+
+      <h3>Any request</h3>
+      <form class="custom" id="custom" autocomplete="off">
+        <div><label for="m">Method</label>
+          <select id="m"><option>GET</option><option>HEAD</option><option>POST</option></select></div>
+        <div><label for="path">Path</label><input type="text" id="path" value="/pow?a=2&amp;b=8" spellcheck="false"></div>
+        <button type="submit" class="send">Send</button>
+      </form>
+      <div class="chips" aria-label="Examples">
+        <button type="button" data-m="GET" data-p="/pow?a=2&amp;b=8">GET /pow → 404</button>
+        <button type="button" data-m="POST" data-p="/add">POST /add → 405</button>
+        <button type="button" data-m="GET" data-p="/add?a=x&amp;b=3">a=x → 400</button>
+        <button type="button" data-m="HEAD" data-p="/add?a=2&amp;b=3">HEAD /add</button>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="wire-h">
+      <h2 id="wire-h">Last exchange</h2>
+      <p class="hint">What <code>fetch()</code> saw. The browser adds <code>Host</code>, <code>User-Agent</code> and friends to the request itself.</p>
+      <div class="wire" id="wire"><span class="c-muted">Nothing sent yet.</span></div>
+      <div class="facts">
+        <div class="fact"><span class="k">Round trip</span><span class="v" id="f-rtt">–</span></div>
+        <div class="fact"><span class="k">Protocol</span><span class="v" id="f-proto">–</span></div>
+        <div class="fact"><span class="k">Conn id · request #</span><span class="v" id="f-conn">–</span></div>
+      </div>
+    </section>
+
+    <section class="panel wide" aria-labelledby="mark-h">
+      <h2 id="mark-h">The marking sequence</h2>
+      <p class="hint">The six graded requests, in order, as the marker sends them.</p>
+      <div class="toolbar">
+        <button type="button" class="primary" id="run">Run the marking sequence</button>
+        <span class="summary" id="mark-summary" role="status" aria-live="polite"></span>
+      </div>
+      <div class="table-wrap">
+        <table id="mark">
+          <caption class="sr-only">Marking sequence: expected and actual responses</caption>
+          <thead><tr><th scope="col">#</th><th scope="col">Request</th><th scope="col">Expected</th><th scope="col">Actual</th><th scope="col">Conn · req #</th><th scope="col">Result</th></tr></thead>
+          <tbody><tr class="empty"><td colspan="6">Not run yet.</td></tr></tbody>
+        </table>
+      </div>
+      <p class="callout"><strong>An honest caveat.</strong> A browser manages its own connection pool: <code>fetch()</code> cannot pick or pin a socket, and
+        the browser may open or retire connections whenever it likes. So this table shows what the <em>server</em> observed, reported back
+        through <code>X-Conn-Id</code>. The authoritative test is <code>marker.py</code>, which opens exactly one socket and sends all six requests on it.</p>
+    </section>
+
+    <section class="panel wide" aria-labelledby="log-h">
+      <h2 id="log-h">Connection log</h2>
+      <p class="hint">One row per request, newest at the bottom. Rows share a colour when the server answered them on the same connection.</p>
+      <div class="toolbar">
+        <div class="conn-summary" id="conn-summary"></div>
+        <button type="button" id="clear" style="margin-left:auto">Clear log</button>
+      </div>
+      <div class="table-wrap log-wrap" id="log-wrap">
+        <table id="log">
+          <caption class="sr-only">Every request sent from this page, with the connection that answered it</caption>
+          <thead><tr><th scope="col">#</th><th scope="col">Request</th><th scope="col">Status</th><th scope="col">Body</th><th scope="col">Conn id</th><th scope="col">Req # on conn</th></tr></thead>
+          <tbody><tr class="empty"><td colspan="6">No requests yet.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel wide" aria-labelledby="cant-h">
+      <h2 id="cant-h">Can't be tested from a browser</h2>
+      <p class="hint">A browser hides these on purpose. Run them from <code>calculator/</code> (use <code>python3</code> on macOS/Linux).</p>
+      <ul class="untestable">
+        <li>
+          <h3>Missing Host header → 400</h3>
+          <p>Browsers always send <code>Host</code>, and <code>fetch()</code> is not allowed to remove it.</p>
+          <pre>python marker.py --full</pre>
+          <pre>python -m unittest -v tests.test_server.TestMarker.test_task_list</pre>
+        </li>
+        <li>
+          <h3>Pipelining</h3>
+          <p>Browsers send one request at a time on an HTTP/1.1 connection and wait for its answer.</p>
+          <pre>python marker.py --pipeline</pre>
+          <pre>python -m unittest -v tests.test_server.TestFraming.test_pipelining_six_at_once</pre>
+        </li>
+        <li>
+          <h3>A request sent byte by byte</h3>
+          <p>The browser, not the page, decides how bytes are split into TCP segments.</p>
+          <pre>python -m unittest -v tests.test_server.TestFraming.test_one_byte_at_a_time</pre>
+        </li>
+        <li>
+          <h3>Content-Length body framing</h3>
+          <p>A page can't put a POST body and the next request in one segment, so it can't show byte n+1 being left for the next request.</p>
+          <pre>python -m unittest -v tests.test_server.TestFraming.test_post_body_is_consumed_not_parsed tests.test_server.TestFraming.test_body_that_looks_like_a_request</pre>
+        </li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>Served by <code>server.py</code> itself, over the same raw socket as the calculator: one file of HTML, CSS and JavaScript,
+    no framework, nothing fetched from the internet.</footer>
+</div>
+
+<noscript><p class="wrap">This page needs JavaScript. The calculator itself does not: try <a href="/add?a=2&amp;b=3">/add?a=2&amp;b=3</a>.</p></noscript>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const SYMBOL = { add: "+", sub: "−", mul: "×", div: "÷" };
+const MARKING = [
+  { method: "GET", path: "/add?a=2&b=3", status: 200, body: "5" },
+  { method: "GET", path: "/sub?a=10&b=4", status: 200, body: "6" },
+  { method: "GET", path: "/mul?a=6&b=7", status: 200, body: "42" },
+  { method: "GET", path: "/div?a=1&b=0", status: 400 },
+  { method: "GET", path: "/pow?a=2&b=8", status: 404 },
+  { method: "POST", path: "/add", reqBody: "a=2&b=3", status: 405, allow: "GET, HEAD" },
+];
+
+const log = { n: 0, lastConn: null, seen: new Map(), order: [] };   // seen: conn id -> requests logged
+let idle = null;   // { at, timeout, conn, closed }
+let lastOp = "add";
+let busy = false;
+
+function el(tag, props, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  for (const kid of kids) if (kid != null) node.append(kid);   // strings become text nodes, never HTML
+  return node;
+}
+
+function tone(status) {
+  if (!status) return "err";
+  if (status >= 500) return "err";
+  if (status >= 400) return "warn";
+  if (status >= 200 && status < 300) return "ok";
+  return "info";
+}
+
+function group(connId) {
+  const i = log.order.indexOf(connId);
+  return "g" + ((i < 0 ? log.order.length : i) % 4);
+}
+
+function reasonOf(body) {
+  // Error bodies look like "400 Bad Request: division by zero".
+  const i = body.indexOf(": ");
+  return i >= 0 ? body.slice(i + 2) : body;
+}
+
+function shortBody(ex) {
+  if (ex.error) return ex.error;
+  if (ex.method === "HEAD") return "(HEAD: no body)";
+  if ((ex.type || "").startsWith("text/html")) return `(HTML page, ${ex.bytes} bytes)`;
+  return ex.body.length > 90 ? ex.body.slice(0, 90) + "…" : ex.body;
+}
+
+async function exchange(method, path, reqBody) {
+  const init = { method, cache: "no-store" };
+  if (reqBody != null) {
+    init.body = reqBody;
+    init.headers = { "Content-Type": "application/x-www-form-urlencoded" };
+  }
+  const ex = { method, path, reqBody, status: 0, statusText: "", headers: [], body: "", error: null };
+  const t0 = performance.now();
+  try {
+    const res = await fetch(path, init);
+    ex.body = await res.text();
+    ex.status = res.status;
+    ex.statusText = res.statusText;
+    ex.headers = [...res.headers];
+  } catch (err) {
+    ex.error = "network error: is server.py running?";
+  }
+  ex.rtt = performance.now() - t0;
+  ex.h = new Map(ex.headers);
+  ex.connId = ex.h.get("x-conn-id") || null;
+  ex.connReq = ex.h.get("x-conn-request") || null;
+  ex.type = ex.h.get("content-type") || "";
+  ex.bytes = Number(ex.h.get("content-length") || 0);
+  ex.protocol = protocolOf(path);
+  record(ex);
+  return ex;
+}
+
+function protocolOf(path) {
+  const url = new URL(path, location.href).href;
+  const entries = performance.getEntriesByName(url, "resource");
+  const entry = entries[entries.length - 1];
+  performance.clearResourceTimings();
+  return entry && entry.nextHopProtocol ? entry.nextHopProtocol : "–";
+}
+
+/* ---------- recording one exchange everywhere ---------- */
+
+function record(ex) {
+  const n = ++log.n;
+  const tbody = document.querySelector("#log tbody");
+  tbody.querySelector(".empty")?.remove();
+
+  if (ex.connId && ex.connId !== log.lastConn) {
+    const isNew = !log.seen.has(ex.connId);
+    if (isNew) log.order.push(ex.connId);
+    const before = Number(ex.connReq) - 1;
+    const text = isNew
+      ? [el("span", { class: "flag", text: "● New connection " }), `conn ${ex.connId}: the server accepted a new TCP connection.`,
+         before > 0 ? ` Its first ${before === 1 ? "request" : before + " requests"} came before this log started (loading this page).` : ""]
+      : [`Back on conn ${ex.connId}: the browser chose another connection from its pool.`];
+    tbody.append(el("tr", { class: `sep ${isNew ? "new" : ""} ${group(ex.connId)}` }, el("td", { colspan: "6" }, ...text)));
+  }
+  if (ex.connId) {
+    log.seen.set(ex.connId, (log.seen.get(ex.connId) || 0) + 1);
+    log.lastConn = ex.connId;
+  }
+
+  const g = ex.connId ? group(ex.connId) : "";
+  tbody.append(el("tr", { class: `row ${g}` },
+    el("td", { class: "num", text: String(n) }),
+    el("td", { class: "mono", text: `${ex.method} ${ex.path}` }),
+    el("td", {}, el("span", { class: `st ${tone(ex.status)}`, text: ex.status ? String(ex.status) : "–" })),
+    el("td", { class: "mono", text: shortBody(ex) }),
+    el("td", {}, ex.connId ? el("span", { class: `conn ${g}`, text: ex.connId }) : "–"),
+    el("td", { class: "num", text: ex.connReq || "–" })));
+  const wrap = $("log-wrap");
+  wrap.scrollTop = wrap.scrollHeight;
+
+  showWire(ex);
+  showStrip(ex);
+}
+
+function showWire(ex) {
+  const wire = $("wire");
+  wire.replaceChildren();
+  wire.append(el("div", { class: "line" }, el("span", { class: "dir", text: "→" }), el("span", { text: `${ex.method} ${ex.path} HTTP/1.1` })));
+  if (ex.reqBody) wire.append(el("div", { class: "reqbody", text: `body: ${ex.reqBody}` }));
+  if (ex.error) {
+    wire.append(el("div", { class: "line status c-err" }, el("span", { class: "dir", text: "←" }), el("span", { text: ex.error })));
+  } else {
+    wire.append(el("div", { class: `line status c-${tone(ex.status)}` }, el("span", { class: "dir", text: "←" }),
+      el("span", { text: `${ex.status} ${ex.statusText}` })));
+    const dl = el("dl");
+    for (const [name, value] of ex.headers) {
+      const cls = name.startsWith("x-conn") ? "conn-h" : "";
+      dl.append(el("dt", { class: cls, text: name }), el("dd", { class: cls, text: value }));
+    }
+    wire.append(dl);
+    wire.append(el("div", { class: "line", style: "margin-top:8px" }, el("span", { class: "dir", text: "" }),
+      ex.method === "HEAD" || (ex.type || "").startsWith("text/html") ? el("span", { class: "c-muted", text: shortBody(ex) }) : el("pre", { text: ex.body || "(empty body)" })));
+  }
+  $("f-rtt").textContent = `${ex.rtt.toFixed(1)} ms`;
+  $("f-proto").textContent = ex.protocol;
+  $("f-conn").textContent = ex.connId ? `${ex.connId} · #${ex.connReq}` : "–";
+}
+
+function showStrip(ex) {
+  if (ex.error) {
+    idle = null;
+    $("s-idle").textContent = "no response";
+    $("s-bar").className = "bar gone";
+    $("s-bar").firstElementChild.style.width = "100%";
+    return;
+  }
+  $("s-conn").replaceChildren(ex.connId ? el("span", { class: `conn ${group(ex.connId)}`, text: `conn ${ex.connId}` }) : "–");
+  $("s-count").textContent = ex.connReq || "–";
+  $("s-distinct").textContent = String(log.seen.size);
+  const ka = /timeout=(\d+)/i.exec(ex.h.get("keep-alive") || "");
+  idle = {
+    at: performance.now(),
+    timeout: ka ? Number(ka[1]) : null,
+    conn: ex.connId,
+    closed: /\bclose\b/i.test(ex.h.get("connection") || ""),
+  };
+  const summary = $("conn-summary");
+  summary.replaceChildren(...[...log.seen].map(([id, count]) =>
+    el("span", { class: `conn ${group(id)}`, text: `conn ${id} · ${count} logged` })));
+  tickIdle();
+}
+
+function tickIdle() {
+  if (!idle) return;
+  const bar = $("s-bar");
+  const fill = bar.firstElementChild;
+  if (idle.closed) {
+    $("s-idle").textContent = `conn ${idle.conn} closed by the server (Connection: close)`;
+    bar.className = "bar gone";
+    fill.style.width = "100%";
+    return;
+  }
+  if (!idle.timeout) {
+    $("s-idle").textContent = "no Keep-Alive timeout advertised";
+    fill.style.width = "0";
+    return;
+  }
+  const left = idle.timeout - (performance.now() - idle.at) / 1000;
+  if (left > 0) {
+    $("s-idle").textContent = `≈ ${Math.ceil(left)} s of ${idle.timeout} s left on conn ${idle.conn}`;
+    bar.className = left < 10 ? "bar low" : "bar";
+    fill.style.width = `${(left / idle.timeout) * 100}%`;
+  } else {
+    $("s-idle").textContent = `expired: conn ${idle.conn} has probably been closed, so the next request should show a new conn id`;
+    bar.className = "bar gone";
+    fill.style.width = "100%";
+  }
+}
+setInterval(tickIdle, 250);
+
+/* ---------- calculator ---------- */
+
+async function calculate(op) {
+  if (busy) return;
+  lastOp = op;
+  document.querySelectorAll(".ops button").forEach((b) => b.classList.toggle("last", b.dataset.op === op));
+  const a = $("a").value, b = $("b").value;
+  const path = `/${op}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`;
+  busy = true;
+  const ex = await exchange("GET", path);
+  busy = false;
+  const box = $("result");
+  const expr = el("span", { class: "expr", text: `${a || "∅"} ${SYMBOL[op]} ${b || "∅"}   ·   GET ${path}` });
+  if (ex.error) {
+    box.className = "result err";
+    box.replaceChildren(expr, el("span", { class: "big", text: "no answer" }), el("span", { class: "reason", text: ex.error }));
+  } else if (ex.status === 200) {
+    box.className = "result ok";
+    box.replaceChildren(expr, el("span", { class: "big", text: ex.body }));
+  } else {
+    box.className = `result ${tone(ex.status)}`;
+    box.replaceChildren(expr, el("span", { class: "big", text: `${ex.status} ${ex.statusText}` }),
+      el("span", { class: "reason", text: reasonOf(ex.body) }));
+  }
+}
+
+document.querySelectorAll(".ops button").forEach((b) => b.addEventListener("click", () => calculate(b.dataset.op)));
+for (const id of ["a", "b"]) {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); calculate(lastOp); } });
+}
+
+async function sendCustom(method, path) {
+  if (busy) return;
+  busy = true;
+  const ex = await exchange(method, path, method === "POST" ? "a=2&b=3" : null);
+  busy = false;
+  const box = $("result");
+  const expr = el("span", { class: "expr", text: `${method} ${path}` + (method === "POST" ? "   (body a=2&b=3)" : "") });
+  if (ex.error) {
+    box.className = "result err";
+    box.replaceChildren(expr, el("span", { class: "big", text: "no answer" }), el("span", { class: "reason", text: ex.error }));
+  } else {
+    box.className = `result ${tone(ex.status)}`;
+    const big = ex.status === 200 && method === "GET" && ex.type.startsWith("text/plain") ? ex.body : `${ex.status} ${ex.statusText}`;
+    const allow = ex.h.get("allow");
+    const reason = ex.status === 200 ? shortBody(ex) : reasonOf(ex.body) + (allow ? `   (Allow: ${allow})` : "");
+    box.replaceChildren(expr, el("span", { class: "big", text: big }), el("span", { class: "reason", text: reason }));
+  }
+}
+
+$("custom").addEventListener("submit", (e) => {
+  e.preventDefault();
+  let path = $("path").value.trim() || "/";
+  if (!path.startsWith("/")) path = "/" + path;
+  sendCustom($("m").value, path);
+});
+document.querySelectorAll(".chips button").forEach((b) => b.addEventListener("click", () => {
+  $("m").value = b.dataset.m;
+  $("path").value = b.dataset.p;
+  sendCustom(b.dataset.m, b.dataset.p);
+}));
+
+/* ---------- marking sequence ---------- */
+
+$("run").addEventListener("click", async () => {
+  if (busy) return;
+  busy = true;
+  const button = $("run");
+  button.disabled = true;
+  $("mark-summary").textContent = "Running…";
+  const tbody = document.querySelector("#mark tbody");
+  tbody.replaceChildren();
+  const results = [];
+  for (const [i, t] of MARKING.entries()) {
+    const ex = await exchange(t.method, t.path, t.reqBody);
+    const allow = ex.h.get("allow");
+    const pass = ex.status === t.status && (t.body === undefined || ex.body === t.body) && (t.allow === undefined || allow === t.allow);
+    results.push({ ex, pass });
+    const expected = t.body !== undefined ? `${t.status} · ${t.body}` : t.allow ? `${t.status} · Allow: ${t.allow}` : `${t.status} · any reason`;
+    const actual = ex.error ? ex.error
+      : ex.status === 200 ? `${ex.status} · ${ex.body}`
+      : `${ex.status} · ${allow ? "Allow: " + allow + " · " : ""}${reasonOf(ex.body)}`;
+    const g = ex.connId ? group(ex.connId) : "";
+    tbody.append(el("tr", {},
+      el("td", { class: "num", text: String(i + 1) }),
+      el("td", { class: "mono", text: `${t.method} ${t.path}` + (t.reqBody ? `  (body ${t.reqBody})` : "") }),
+      el("td", { class: "mono", text: expected }),
+      el("td", { class: `mono c-${tone(ex.status)}`, text: actual }),
+      el("td", {}, ex.connId ? el("span", { class: `conn ${g}`, text: ex.connId }) : "–", ex.connReq ? `  #${ex.connReq}` : ""),
+      el("td", { class: pass ? "pass" : "fail", text: pass ? "✓ pass" : "✗ fail" })));
+  }
+  const conns = [...new Set(results.map((r) => r.ex.connId).filter(Boolean))];
+  const passed = results.filter((r) => r.pass).length;
+  const counts = results.map((r) => Number(r.ex.connReq)).filter(Boolean);
+  let text = `${passed} of ${MARKING.length} passed · ${conns.length} distinct conn id${conns.length === 1 ? "" : "s"}`;
+  if (conns.length === 1) text += ` (all six on conn ${conns[0]}, its requests #${Math.min(...counts)}–#${Math.max(...counts)})`;
+  else if (conns.length > 1) text += ` (${conns.join(", ")}: the browser's pool spread them out)`;
+  $("mark-summary").textContent = text;
+  $("mark-summary").className = `summary ${passed === MARKING.length ? "c-ok" : "c-err"}`;
+  button.disabled = false;
+  busy = false;
+});
+
+$("clear").addEventListener("click", () => {
+  log.n = 0; log.lastConn = null; log.seen.clear(); log.order = [];
+  document.querySelector("#log tbody").replaceChildren(el("tr", { class: "empty" }, el("td", { colspan: "6", text: "No requests yet." })));
+  $("conn-summary").replaceChildren();
+  $("s-distinct").textContent = "0";
+});
+</script>
+</body>
+</html>
