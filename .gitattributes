@@ -1,0 +1,5 @@
+# Keep LF on every platform: the POSIX launchers need it, and the sample site's
+# bytes must match the captures in binary-http/HEXDUMP.md.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bin binary

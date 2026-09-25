@@ -1,0 +1,14 @@
+#!/bin/sh
+# ./bcurl ...   runs bcurl.py with the first Python 3.8+ it can find
+here=$(dirname "$0")
+for py in python3 python; do
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then
+    exec "$py" "$here/bcurl.py" "$@"
+  fi
+done
+# Windows 'py' launcher (Git Bash): ask it for the interpreter itself, so it doesn't consult the shebang
+if command -v py >/dev/null 2>&1 && exe=$(py -c 'import sys; print(sys.executable)' 2>/dev/null); then
+  exec "$exe" "$here/bcurl.py" "$@"
+fi
+echo "bcurl: no Python 3.8+ found" >&2
+exit 127
