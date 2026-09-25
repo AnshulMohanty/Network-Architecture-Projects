@@ -1,0 +1,9 @@
+sequenceDiagram
+    participant C as client
+    participant S as server
+    loop once per request, six times
+        C->>S: SYN / SYN-ACK / ACK (new connection)
+        C->>S: GET /add?a=2&b=3 HTTP/1.0
+        S-->>C: 200 · 5, Connection: close
+        S-->>C: FIN (the end of the body is the end of the connection)
+    end

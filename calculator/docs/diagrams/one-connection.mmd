@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant C as marker.py
+    participant S as server.py
+    C->>S: SYN
+    S-->>C: SYN-ACK
+    C->>S: ACK
+    Note over C,S: the one and only TCP handshake
+    C->>S: GET /add?a=2&b=3
+    S-->>C: 200 · 5
+    C->>S: GET /sub?a=10&b=4
+    S-->>C: 200 · 6
+    C->>S: GET /mul?a=6&b=7
+    S-->>C: 200 · 42
+    C->>S: GET /div?a=1&b=0
+    S-->>C: 400 · division by zero
+    C->>S: GET /pow?a=2&b=8
+    S-->>C: 404 · no such operation
+    C->>S: POST /add + 7 body bytes
+    S-->>C: 405 · Allow: GET, HEAD
+    Note over C,S: socket still open: True

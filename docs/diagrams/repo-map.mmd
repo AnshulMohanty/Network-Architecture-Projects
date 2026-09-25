@@ -1,0 +1,19 @@
+flowchart TB
+    %% top to bottom, so the two projects sit side by side and the image stays narrow enough for a README
+    subgraph bin["binary-http/ · BHTTP/1"]
+        bcurl["bcurl.py"]
+        bserve["bserve.py"]
+        www[("www/")]
+        js["interop/js/<br/>bserve.mjs · bcurl.mjs"]
+    end
+    subgraph calc["calculator/ · HTTP/1.1"]
+        marker["marker.py<br/>one socket, six requests"]
+        browser["browser<br/>the UI at /"]
+        server["server.py"]
+    end
+    marker -- "HTTP/1.1, keep-alive" --> server
+    browser -- "fetch(), X-Conn-Id" --> server
+    bcurl -- "BHTTP/1 frames" --> bserve
+    bserve -- "reads files" --> www
+    js <-- "test_interop.py" --> bserve
+    js <-- "test_interop.py" --> bcurl

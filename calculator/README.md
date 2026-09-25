@@ -73,43 +73,20 @@ header → 400. The socket is still open after all nine.
 This is what `marker.py` does on the wire. There's one TCP handshake, six request/response pairs, and the connection is
 still open at the end:
 
-```mermaid
-sequenceDiagram
-    participant C as marker.py
-    participant S as server.py
-    C->>S: SYN
-    S-->>C: SYN-ACK
-    C->>S: ACK
-    Note over C,S: the one and only TCP handshake
-    C->>S: GET /add?a=2&b=3
-    S-->>C: 200 · 5
-    C->>S: GET /sub?a=10&b=4
-    S-->>C: 200 · 6
-    C->>S: GET /mul?a=6&b=7
-    S-->>C: 200 · 42
-    C->>S: GET /div?a=1&b=0
-    S-->>C: 400 · division by zero
-    C->>S: GET /pow?a=2&b=8
-    S-->>C: 404 · no such operation
-    C->>S: POST /add + 7 body bytes
-    S-->>C: 405 · Allow: GET, HEAD
-    Note over C,S: socket still open: True
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/one-connection-dark.svg">
+  <img src="docs/diagrams/one-connection-light.svg" alt="Sequence diagram: marker.py and server.py do one TCP handshake, then six request/response pairs on the same connection, and the socket is still open at the end.">
+</picture>
+<sub>Diagram source: <a href="docs/diagrams/one-connection.mmd">one-connection.mmd</a></sub>
 
 With HTTP/1.0 (or `Connection: close`) every request pays for its own handshake. The server marks the end of each
 response by closing the connection:
 
-```mermaid
-sequenceDiagram
-    participant C as client
-    participant S as server
-    loop once per request, six times
-        C->>S: SYN / SYN-ACK / ACK (new connection)
-        C->>S: GET /add?a=2&b=3 HTTP/1.0
-        S-->>C: 200 · 5, Connection: close
-        S-->>C: FIN (the end of the body is the end of the connection)
-    end
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/http10-per-request-dark.svg">
+  <img src="docs/diagrams/http10-per-request-light.svg" alt="Sequence diagram: with HTTP/1.0 every request opens its own connection, and the server ends each response by closing it.">
+</picture>
+<sub>Diagram source: <a href="docs/diagrams/http10-per-request.mmd">http10-per-request.mmd</a></sub>
 
 The server supports both. An HTTP/1.1 request stays open unless it says `Connection: close`. An HTTP/1.0 request
 closes unless it says `Connection: keep-alive` (`Request.keep_alive`).
@@ -138,21 +115,11 @@ The server answers the POST with 405, but it **consumes the 7 body bytes first**
 would be parsed as the next request line. How long the body is comes from the headers (RFC 9112 §6.3), never from
 how the bytes happened to arrive:
 
-```mermaid
-flowchart TD
-    A["read_request(reader)<br/>read_line() until the empty line"] --> B{"read_body(reader, request)"}
-    B -- "Transfer-Encoding: chunked" --> C["read_chunked()<br/>size line, data, CRLF … until the 0 chunk and trailers"]
-    B -- "Content-Length: n" --> D["reader.discard(n)<br/>exactly n bytes, no more"]
-    B -- "neither header" --> E["no body<br/>do not wait for one"]
-    B -- "both headers, or a bad or conflicting length" --> X["400 + Connection: close<br/>(two framings is how request smuggling starts)"]
-    C --> F["leftover bytes stay in Reader.buf"]
-    D --> F
-    E --> F
-    F --> G["answer(), then one sendall()"]
-    G -- "Reader.buf already holds the next request" --> A
-    G -- "Reader.buf empty" --> H["recv() and wait, up to the idle timeout"]
-    H --> A
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/framing-flow-dark.svg">
+  <img src="docs/diagrams/framing-flow-light.svg" alt="Flowchart: read_request reads the head, read_body consumes a chunked body, exactly Content-Length bytes or no body, and the leftover bytes stay in Reader.buf for the next request.">
+</picture>
+<sub>Diagram source: <a href="docs/diagrams/framing-flow.mmd">framing-flow.mmd</a></sub>
 
 **Pipelining falls out of this for free.** If the next request is already in `Reader.buf`, it's answered before the
 server calls `recv()` again.
@@ -175,19 +142,11 @@ example `400 Bad Request: division by zero`.
 
 ## 8. The life of a connection
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle: accepted
-    Idle --> Request: first byte arrives
-    Idle --> Closed: 60 s without a byte (just FIN, no 408)
-    Idle --> Closed: client closes
-    Request --> Respond: request complete and framed
-    Request --> Closed: not complete within 10 s (408, then close)
-    Request --> Closed: framing error (4xx or 5xx with Connection close)
-    Respond --> Idle: keep-alive, including after a 400, 404 or 405
-    Respond --> Closed: Connection close, or HTTP/1.0 without keep-alive
-    Closed --> [*]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/connection-states-dark.svg">
+  <img src="docs/diagrams/connection-states-light.svg" alt="State diagram: a connection moves from Idle to Request to Respond and back to Idle, and closes on Connection: close, HTTP/1.0, a framing error or a timeout.">
+</picture>
+<sub>Diagram source: <a href="docs/diagrams/connection-states.mmd">connection-states.mmd</a></sub>
 
 There are two clocks, both in `CalculatorServer._serve_connection`. The **idle** clock (60 s, `--idle-timeout`) runs
 while the connection waits between requests. The **request** clock (10 s, `--request-timeout`) starts at a request's

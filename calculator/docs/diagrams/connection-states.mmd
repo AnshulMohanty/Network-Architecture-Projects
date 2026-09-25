@@ -1,0 +1,11 @@
+stateDiagram-v2
+    [*] --> Idle: accepted
+    Idle --> Request: first byte arrives
+    Idle --> Closed: 60 s without a byte (just FIN, no 408)
+    Idle --> Closed: client closes
+    Request --> Respond: request complete and framed
+    Request --> Closed: not complete within 10 s (408, then close)
+    Request --> Closed: framing error (4xx or 5xx with Connection close)
+    Respond --> Idle: keep-alive, including after a 400, 404 or 405
+    Respond --> Closed: Connection close, or HTTP/1.0 without keep-alive
+    Closed --> [*]

@@ -1,0 +1,13 @@
+flowchart TD
+    A["read_request(reader)<br/>read_line() until the empty line"] --> B{"read_body(reader, request)"}
+    B -- "Transfer-Encoding: chunked" --> C["read_chunked()<br/>size line, data, CRLF … until the 0 chunk and trailers"]
+    B -- "Content-Length: n" --> D["reader.discard(n)<br/>exactly n bytes, no more"]
+    B -- "neither header" --> E["no body<br/>do not wait for one"]
+    B -- "both headers, or a bad or conflicting length" --> X["400 + Connection: close<br/>(two framings is how request smuggling starts)"]
+    C --> F["leftover bytes stay in Reader.buf"]
+    D --> F
+    E --> F
+    F --> G["answer(), then one sendall()"]
+    G -- "Reader.buf already holds the next request" --> A
+    G -- "Reader.buf empty" --> H["recv() and wait, up to the idle timeout"]
+    H --> A

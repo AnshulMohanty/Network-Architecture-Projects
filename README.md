@@ -79,27 +79,11 @@ Run it from `binary-http/`:
 
 ## How the pieces connect
 
-```mermaid
-flowchart LR
-    %% binary-http is declared first so that the calculator is drawn on top
-    subgraph bin["binary-http/ · BHTTP/1"]
-        bcurl["bcurl.py"]
-        bserve["bserve.py"]
-        www[("www/")]
-        js["interop/js/<br/>bserve.mjs · bcurl.mjs"]
-    end
-    subgraph calc["calculator/ · HTTP/1.1"]
-        marker["marker.py<br/>one socket, six requests"]
-        browser["browser<br/>the UI at /"]
-        server["server.py"]
-    end
-    marker -- "HTTP/1.1, keep-alive" --> server
-    browser -- "fetch(), X-Conn-Id" --> server
-    bcurl -- "BHTTP/1 frames" --> bserve
-    bserve -- "reads files" --> www
-    js <-- "BHTTP/1, test_interop.py" --> bserve
-    js <-- "BHTTP/1, test_interop.py" --> bcurl
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/repo-map-dark.svg">
+  <img src="docs/diagrams/repo-map-light.svg" alt="Flowchart: marker.py and the browser talk HTTP/1.1 to calculator/server.py; bcurl talks BHTTP/1 to bserve, which serves www/; the interop/js implementation talks to both Python programs.">
+</picture>
+<sub>Diagram source: <a href="docs/diagrams/repo-map.mmd">repo-map.mmd</a></sub>
 
 ## Tests
 
